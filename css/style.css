@@ -1,0 +1,241 @@
+:root {
+  --bg-color: #0b0f19;
+  --card-bg: #151c2c;
+  --card-border: #232c42;
+  --accent: #38bdf8;
+  --accent-hover: #0284c7;
+  --danger: #f87171;
+  --success: #22c55e;
+  --text: #f8fafc;
+  --text-dim: #94a3b8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem 1rem;
+}
+
+.container {
+  width: 100%;
+  max-width: 700px;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+header .tagline {
+  color: var(--text-dim);
+  margin-top: 0.25rem;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.disabled-card {
+  opacity: 0.6;
+}
+
+.step-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1rem 0;
+  font-size: 1.1rem;
+}
+
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  background-color: var(--accent);
+  color: #000;
+  font-weight: bold;
+  font-size: 0.9rem;
+}
+
+.coming-soon {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin-top: -0.5rem;
+}
+
+.drop-zone {
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.drop-zone:hover,
+.drop-zone:focus-visible {
+  background: rgba(56, 189, 248, 0.08);
+  outline: none;
+}
+
+.drop-zone.drag-over {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: var(--accent-hover);
+}
+
+.drop-zone .icon {
+  font-size: 2.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.drop-zone h3 {
+  margin: 0 0 0.35rem 0;
+}
+
+.drop-zone p {
+  margin: 0.15rem 0;
+  color: var(--text-dim);
+}
+
+.drop-zone .hint {
+  font-size: 0.8rem;
+  margin-top: 0.75rem;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.error-text {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+
+.file-card {
+  margin-top: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.file-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.file-icon {
+  font-size: 1.6rem;
+}
+
+.file-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-sub {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.btn-icon {
+  background: none;
+  border: 1px solid var(--card-border);
+  color: var(--text-dim);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+#audioPreview {
+  width: 100%;
+  margin-top: 0.85rem;
+}
+
+.btn {
+  display: inline-block;
+  width: 100%;
+  padding: 0.8rem;
+  border: none;
+  border-radius: 6px;
+  font-weight: bold;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+  font-size: 1rem;
+}
+
+.btn.primary {
+  background-color: var(--accent);
+  color: #000;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+footer {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  margin-top: 2rem;
+}
+
+footer a {
+  color: var(--accent);
+}

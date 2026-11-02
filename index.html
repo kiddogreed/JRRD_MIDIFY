@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JRRD_MIDIFY — Accurate Audio to MIDI Converter</title>
+  <meta name="description" content="Convert MP3/WAV audio into detailed, complete MIDI files, fully in your browser.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>JRRD_MIDIFY</h1>
+      <p class="tagline">Accurate Audio-to-MIDI conversion, fully in your browser.</p>
+    </header>
+
+    <main>
+      <!-- Step 1: Import / Attach audio file -->
+      <section class="card" id="importCard">
+        <h2 class="step-heading"><span class="step-badge">1</span> Import Audio</h2>
+
+        <div class="drop-zone" id="dropZone" tabindex="0" role="button"
+             aria-label="Import an MP3 or WAV audio file">
+          <input type="file" id="fileInput" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" hidden>
+          <div class="icon" aria-hidden="true">🎵</div>
+          <h3>Drag &amp; drop an MP3 or WAV file here</h3>
+          <p>or click to browse your device</p>
+          <p class="hint">Supported formats: .mp3, .wav &nbsp;·&nbsp; Max size: 100&nbsp;MB</p>
+        </div>
+
+        <p class="error-text hidden" id="errorText" role="alert"></p>
+
+        <div class="file-card hidden" id="fileCard">
+          <div class="file-card-header">
+            <div class="file-icon" aria-hidden="true">🎧</div>
+            <div class="file-meta">
+              <div class="file-name" id="fileName"></div>
+              <div class="file-sub" id="fileSub"></div>
+            </div>
+            <button type="button" class="btn-icon" id="removeFileBtn" title="Remove file" aria-label="Remove file">✕</button>
+          </div>
+          <audio id="audioPreview" controls preload="metadata"></audio>
+        </div>
+      </section>
+
+      <!-- Step 2+: Processing & conversion (coming soon) -->
+      <section class="card disabled-card" id="processCard">
+        <h2 class="step-heading"><span class="step-badge">2</span> Convert to MIDI</h2>
+        <p class="coming-soon">Processing engine is not implemented yet — coming in the next step.</p>
+        <button type="button" class="btn primary" id="convertBtn" disabled>Process &amp; Convert to MIDI</button>
+      </section>
+    </main>
+
+    <footer>
+      <p>See <a href="changelog.md">changelog.md</a> for progress and roadmap.</p>
+    </footer>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
