@@ -75,11 +75,18 @@
         </div>
       </section>
 
-      <!-- Step 4+: MIDI export (coming soon) -->
+      <!-- Step 4: MIDI export -->
       <section class="card disabled-card" id="processCard">
         <h2 class="step-heading"><span class="step-badge">3</span> Convert to MIDI</h2>
-        <p class="coming-soon">MIDI file export is not implemented yet — coming in the next step.</p>
-        <button type="button" class="btn primary" id="convertBtn" disabled>Download .midi File</button>
+        <p class="coming-soon" id="convertHint">Import an audio file above first.</p>
+        <button type="button" class="btn primary" id="convertBtn" disabled>Generate &amp; Download .midi</button>
+
+        <p class="decode-status" id="convertStatus"></p>
+
+        <div class="midi-result hidden" id="midiResult">
+          <p class="note-summary" id="midiResultSummary"></p>
+          <a id="midiDownloadLink" class="btn download" download>Download Again</a>
+        </div>
       </section>
     </main>
 

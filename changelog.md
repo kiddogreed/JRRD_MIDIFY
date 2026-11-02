@@ -7,11 +7,172 @@ read the latest entry's "Next steps" section to know where to resume.
 
 ---
 
-## [Unreleased] — Step 4: Custom MIDI (.midi) file writer (not started)
+## [Unreleased] — Step 5: Accuracy tuning & post-processing (not started)
 
 Proposed next step — requires user confirmation before implementation, per
 the project's step-by-step-with-confirmation workflow. See "Next steps"
-under Step 3 below for the detailed plan.
+under Step 4 below for the detailed plan.
+
+---
+
+## [Step 4] — 2026-11-02: Custom MIDI (.midi) file writer + download
+
+**Status:** ✅ Complete
+
+### What was built
+
+- [js/modules/midi-writer.js](./js/modules/midi-writer.js) — a hand-written
+  Standard MIDI File (SMF) Type 0 encoder (`buildStandardMidiFile`), plus
+  convenience wrappers `buildMidiBlob` (→ `Blob`) and `suggestMidiFileName`.
+  No dependency on `@tonejs/midi`'s own exporter (which needs Node's
+  `Buffer`, unnecessary in-browser — see Step 1's architecture decision).
+  Encodes:
+  - Set Tempo, 4/4 Time Signature, Track Name, and a Program Change to
+    Acoustic Grand Piano (General MIDI program 0) at tick 0.
+  - An RPN 0,0 (Pitch Bend Range) declaration, set to ±12 semitones and then
+    nulled so later Data Entry CCs can't retarget it.
+  - A Note On/Note Off pair per detected note (velocity from
+    `amplitudeToVelocity`, pitch clamped/rounded to a valid MIDI note).
+  - Pitch Bend events reconstructed from each note's `pitchBends` contour
+    data — **only for notes that don't overlap any other note in time**
+    (see "Key decision" below) — with a reset-to-center bend at each such
+    note's end, and redundant identical bend samples skipped.
+  - A correct End-of-Track meta event as the final, latest-tick event.
+  - Proper variable-length-quantity delta-time encoding and tick-ordered
+    event sequencing (stable-sorted so same-tick Note Off → Pitch Bend →
+    Note On ordering stays sensible).
+- [index.html](./index.html) / [css/style.css](./css/style.css) — the
+  "Convert to MIDI" card (step 3) now has a live "Generate & Download
+  .midi" button, a status line, and a result area (generated filename, note
+  count, file size, and a repeatable "Download Again" link).
+- [js/app.js](./js/app.js) wiring: clicking Convert reuses the cached
+  `detectedNotes` from Step 3's preview if already run for the current
+  file, otherwise runs detection automatically first (sharing the same
+  `isDetecting` lock from Step 3 — no new concurrency surface introduced).
+  The resulting `Blob` is turned into an object URL, a download is
+  triggered immediately via a temporary anchor element, and the result area
+  stays available afterwards for re-downloading without rebuilding.
+
+### Key decision: single-channel output + overlap-aware pitch bending
+
+MIDI Pitch Bend is a **channel-wide** message — it bends every note
+currently sounding on that channel, not just one. Two designs were
+considered to reconstruct Basic Pitch's per-note micro-pitch (contour)
+data without corrupting simultaneously-sounding notes:
+
+1. **Multi-channel voice allocation** (spread overlapping notes across up
+   to 15 channels so each bent note is isolated) — maximizes bend fidelity
+   even within dense chords, but fragments the file into many MIDI
+   channels, which many DAWs/LMMS display as separate tracks on import —
+   messy for what should be a single instrument part.
+2. **Single channel + overlap-aware bending** (chosen): every note stays on
+   channel 0 (one clean track on import), but a note's `pitchBends` data is
+   only emitted if that note's time range doesn't overlap any other note's.
+   Overlapping notes (chords, double-stops) still get fully correct
+   pitch/timing/velocity — they just play at their quantized semitone pitch
+   instead of with micro-pitch detail.
+
+Option 2 was chosen because it keeps the file clean/importable as a single
+part, and the trade-off maps well onto real instrument behavior: pitch
+bends mostly matter for monophonic passages (lead lines, vocals, solos),
+which rarely overlap other notes; chordal/polyphonic passages (e.g. piano)
+usually come from instruments that can't bend pitch anyway, so losing bend
+detail there is a non-issue. Verified with a real detected 4-note melody
+(see "How to verify" below): the three mutually-overlapping notes in that
+take correctly got no bend events, while the one isolated trailing note
+did, with a correct reset-to-center at its end.
+
+### Key decisions
+
+- **Tempo is a fixed internal constant (120 BPM)**, not detected from the
+  audio. This does not affect audible timing accuracy: note start/duration
+  are always converted to ticks using that same constant, so playback comes
+  out at the exact source duration regardless of the chosen BPM number —
+  120 is just the number a DAW will display/let you edit against. True
+  tempo detection (so the grid "looks" musically correct for quantization/
+  editing) is left for a later step if wanted.
+- **Division is 960 ticks/quarter** (not the more common 480) for finer
+  pitch-bend timing resolution, since bend samples arrive roughly every
+  ~11.6 ms from the model.
+- Redundant identical consecutive pitch-bend samples are skipped to keep
+  file size down without any loss of fidelity.
+- The `.midi` extension (rather than the more common `.mid`) was used for
+  the downloaded filename, matching the user's explicit requirement.
+
+### How to verify this step
+
+1. Serve the folder statically and open `index.html`.
+2. Import a `.wav`/`.mp3` file, then click "Generate & Download .midi"
+   directly (without clicking "Detect Notes" first) — confirm it runs
+   detection automatically, then a download triggers and a result summary
+   (filename, note count, size) appears.
+3. Alternatively, click "Detect Notes" first, then "Convert to MIDI" —
+   confirm it reuses the existing results instantly instead of re-running
+   detection.
+4. Click "Download Again" — confirm it re-downloads the same file without
+   rebuilding.
+5. Open the generated file in a DAW, `midicsv`, or any MIDI-aware tool —
+   confirm note count/pitch/timing match the Step 3 preview table.
+
+Verified via:
+- A unit-style round-trip test (write → parse) covering: correct chunk
+  IDs/header fields, correct event counts, tempo/time-signature/track-name/
+  program-change/RPN-range presence and values, tick-ordering, and —
+  critically — that a solo note gets multiple pitch-bend events while two
+  deliberately-overlapping chord notes get none.
+- A real end-to-end run: imported a 4-note synthetic melody (same one
+  validated in Step 3), clicked Convert directly, fetched the resulting
+  Blob's raw bytes from the page, and parsed them by hand. Confirmed: Note
+  On/Off for all 4 notes at the correct ticks (times matching the Step 3
+  preview table to the millisecond), a Program Change, the full RPN
+  pitch-bend-range sequence, Tempo/Time-Signature/Track-Name meta events,
+  and pitch-bend events present **only** on the one note (the trailing,
+  non-overlapping C5) that doesn't overlap another note — exactly as
+  designed — with a correct reset-to-center at its end, and a correctly
+  placed End-of-Track event closing the file.
+- Remove/reset correctly clears the MIDI result area and re-disables the
+  Convert button.
+
+### Next steps (pick up here)
+
+**Step 5 (proposed, not started — requires user confirmation):**
+Accuracy/post-processing pass.
+- Surface `onsetThreshold`, `frameThreshold`, and `minNoteLengthFrames`
+  (currently hard-coded to the library's defaults in
+  `js/modules/basic-pitch.js`) as UI sliders, similar in spirit to the
+  original hosting guide's sensitivity/polyphony controls, so users can
+  recover quieter notes or tighten false positives per-recording.
+- Note stitching: merge two detected notes of the same pitch separated by a
+  very short gap (likely a single mis-detected frame) into one continuous
+  note, reducing artificial fragmentation on sustained/vibrato passages.
+- Consider an optional tempo-detection pass (e.g. onset-interval
+  histogram/autocorrelation) so the exported grid lines up musically for
+  users who want to edit the MIDI in a DAW, instead of the fixed 120 BPM
+  constant.
+- A before-download piano-roll-style visual preview (beyond the existing
+  text table) so users can visually spot missing/garbled notes.
+
+**Step 6 (planned):** Polish pass — progress UX refinements, large-file
+handling/chunking guidance, a Web Worker for model inference (noted during
+Step 3 testing — keeps the main thread/UI responsive during processing),
+accessibility pass, and updating `README.md` + the GitHub Pages hosting
+guide to reflect the final architecture end-to-end.
+
+### Notes for whoever continues this (human or AI)
+
+- `js/modules/midi-writer.js`'s `CHANNEL`, `pitchBendRangeSemitones`,
+  `bpm`, and `ticksPerQuarter` are all easy to expose as options if Step 5
+  wants to surface any of them in the UI — the function signature already
+  accepts an `options` object for this.
+- The overlap-detection logic (`computeOverlapFlags`) treats a note as
+  "overlapping" (and therefore bend-ineligible) if its interval intersects
+  *any* other note's interval, even transitively through a third note. This
+  is intentionally conservative/simple; see the module's header comment
+  before changing it.
+- If multi-channel pitch-bend fidelity is wanted later (trading off the
+  "one clean track" property), the groundwork is described in the "Key
+  decision" section above as "Option 1" — not implemented, but the
+  trade-offs are documented there for whoever picks it up.
 
 ---
 
@@ -136,44 +297,15 @@ served copy:
 
 ### Next steps (pick up here)
 
-**Step 4 (proposed, not started — requires user confirmation):** Custom
-MIDI (.midi) file writer + download flow.
-- Implement a from-scratch Standard MIDI File (SMF) Type 0 or Type 1
-  encoder in a new `js/modules/midi-writer.js` (no dependency on
-  `@tonejs/midi`'s own exporter, which relies on Node's `Buffer` — see Step 1
-  entry's architecture decision) — variable-length quantities, a tempo meta
-  event (derive BPM or default to 120), time signature, track name, Note
-  On/Off events built from `detectedNotes`' start/duration/velocity, and
-  **pitch-bend reconstruction**: convert each note's `pitchBends` array into
-  MIDI Pitch Bend events plus an RPN 0,0 (pitch-bend-range) message so bent
-  notes play back correctly in any DAW/player.
-- Wire the "Convert to MIDI" button: consume `detectedNotes` (running
-  detection first if not already run for the current file), build the SMF
-  byte stream, create a `Blob`/object URL, and enable a real download link
-  (replacing today's permanently-disabled placeholder).
-- Validate the generated file: confirm it opens correctly in at least one
-  external tool (e.g. a DAW, `midicsv`, or a browser-based MIDI player) and
-  that note count/timing/pitch match the Step 3 preview table.
-
-**Step 5 (planned):** Accuracy/post-processing pass — tunable
-sensitivity/polyphony controls (surface `onsetThreshold`/`frameThreshold`/
-`minNoteLengthFrames` as UI sliders), minimum note duration, note stitching
-across short gaps, and a before-download note/piano-roll preview so users
-can spot missing or garbled notes before exporting.
-
-**Step 6 (planned):** Polish pass — progress UX, large-file handling/
-chunking guidance, accessibility pass, a Web Worker for model inference
-(so the main thread/UI doesn't momentarily block during each chunk — noted
-as a nice-to-have during this step's testing, not required for correctness),
-and updating `README.md` + the GitHub Pages hosting guide to reflect the
-final architecture.
+(See Step 4's entry above for what was built next, and the top of this file
+for the current/next step.)
 
 ### Notes for whoever continues this (human or AI)
 
 - `detectedNotes` (set in [js/app.js](./js/app.js)) holds the full array of
   `{ startTimeSeconds, durationSeconds, pitchMidi, amplitude, pitchBends }`
   objects for the currently selected file once detection has run — Step 4
-  should consume this directly rather than re-running detection, *unless*
+  consumes this directly rather than re-running detection, *unless*
   the user changed detection-affecting settings (not applicable yet, since
   thresholds aren't UI-exposed until Step 5).
 - Keep the "lock import while busy" pattern from this step's bug-fix when

@@ -1,16 +1,18 @@
 // JRRD_MIDIFY — App entry point.
 // Step 1: import UI. Step 2: audio decoding. Step 3: note detection preview.
+// Step 4: MIDI (.midi) file export.
 // Wires up drag-and-drop + file picker UI, delegates validation to
 // js/modules/file-import.js, decoding/resampling/waveform rendering to
-// js/modules/audio-decode.js / js/modules/waveform.js, and ML note detection
-// to js/modules/basic-pitch.js. MIDI file export lands in a later step (see
-// changelog.md).
+// js/modules/audio-decode.js / js/modules/waveform.js, ML note detection to
+// js/modules/basic-pitch.js, and Standard MIDI File encoding to
+// js/modules/midi-writer.js (see changelog.md).
 
 import { validateAudioFile, formatBytes, formatDuration, getExtension } from './modules/file-import.js';
 import { decodeAndPrepare } from './modules/audio-decode.js';
 import { drawWaveform } from './modules/waveform.js';
 import { detectNotes } from './modules/basic-pitch.js';
 import { midiToNoteName, amplitudeToVelocity } from './modules/music-utils.js';
+import { buildMidiBlob, suggestMidiFileName } from './modules/midi-writer.js';
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -20,7 +22,6 @@ const fileName = document.getElementById('fileName');
 const fileSub = document.getElementById('fileSub');
 const audioPreview = document.getElementById('audioPreview');
 const removeFileBtn = document.getElementById('removeFileBtn');
-const convertBtn = document.getElementById('convertBtn');
 const waveformCanvas = document.getElementById('waveformCanvas');
 const decodeStatus = document.getElementById('decodeStatus');
 
@@ -35,12 +36,21 @@ const noteSummary = document.getElementById('noteSummary');
 const noteTableBody = document.getElementById('noteTableBody');
 const noteTableFootnote = document.getElementById('noteTableFootnote');
 
+const processCard = document.getElementById('processCard');
+const convertHint = document.getElementById('convertHint');
+const convertBtn = document.getElementById('convertBtn');
+const convertStatus = document.getElementById('convertStatus');
+const midiResult = document.getElementById('midiResult');
+const midiResultSummary = document.getElementById('midiResultSummary');
+const midiDownloadLink = document.getElementById('midiDownloadLink');
+
 const MAX_NOTE_ROWS_RENDERED = 300;
 
 let selectedFile = null;
 let objectUrl = null;
+let midiObjectUrl = null;
 let decodedAudio = null; // Populated by decodeSelectedFile(); consumed by note detection.
-let detectedNotes = null; // Populated by runNoteDetection(); consumed by a later MIDI-export step.
+let detectedNotes = null; // Populated by runNoteDetection(); consumed by the MIDI writer.
 // True while a note-detection run is in flight. Basic Pitch's model
 // instance is a shared singleton (js/modules/basic-pitch.js) that cannot
 // safely run two overlapping evaluateModel() calls, so file import/removal
@@ -105,6 +115,12 @@ detectBtn.addEventListener('click', () => {
   }
 });
 
+convertBtn.addEventListener('click', () => {
+  if (decodedAudio && !isDetecting) {
+    generateAndDownloadMidi(decodedAudio, decodeGeneration);
+  }
+});
+
 // --- File handling -------------------------------------------------------
 
 function handleFile(file) {
@@ -143,8 +159,6 @@ function handleFile(file) {
   );
 
   fileCard.classList.remove('hidden');
-  // Convert button stays disabled until the MIDI export engine (Step 4) lands.
-  convertBtn.disabled = true;
 
   detectedNotes = null;
   detectCard.classList.add('disabled-card');
@@ -153,6 +167,16 @@ function handleFile(file) {
   detectProgressSection.classList.add('hidden');
   noteResults.classList.add('hidden');
   setDetectStatus('');
+
+  processCard.classList.add('disabled-card');
+  convertHint.textContent = 'Decoding audio before it can be converted…';
+  convertBtn.disabled = true;
+  midiResult.classList.add('hidden');
+  setConvertStatus('');
+  if (midiObjectUrl) {
+    URL.revokeObjectURL(midiObjectUrl);
+    midiObjectUrl = null;
+  }
 
   decodeSelectedFile(file, myGeneration);
 }
@@ -173,7 +197,7 @@ async function decodeSelectedFile(file, myGeneration) {
         `· prepared ${monoSampleCount.toLocaleString()} samples @ ${prepared.modelSampleRate} Hz for analysis`
     );
 
-    enableDetectCard();
+    enableProcessingCards();
   } catch (err) {
     if (myGeneration !== decodeGeneration) return;
     console.error('Audio decoding failed:', err);
@@ -184,21 +208,28 @@ async function decodeSelectedFile(file, myGeneration) {
   }
 }
 
-function enableDetectCard() {
+function enableProcessingCards() {
   detectCard.classList.remove('disabled-card');
   detectHint.textContent = 'Runs Spotify\'s open-source Basic Pitch ML model fully in your browser (first run downloads ~1\u202fMB of model weights).';
   detectBtn.disabled = false;
+
+  processCard.classList.remove('disabled-card');
+  convertHint.textContent =
+    'Builds a complete, downloadable .midi file (reuses the detection above if you already ran it, otherwise runs it automatically).';
+  convertBtn.disabled = false;
 }
 
 async function runNoteDetection(prepared, myGeneration) {
   isDetecting = true;
   setImportLocked(true);
   detectBtn.disabled = true;
+  convertBtn.disabled = true;
   noteResults.classList.add('hidden');
   detectProgressSection.classList.remove('hidden');
   detectProgressBar.style.width = '0%';
   setDetectStatus('Loading Basic Pitch model…');
 
+  let result = null;
   try {
     const notes = await detectNotes(prepared.monoSamples, {
       onProgress: (pct) => {
@@ -208,13 +239,14 @@ async function runNoteDetection(prepared, myGeneration) {
       },
     });
 
-    if (myGeneration !== decodeGeneration) return; // Superseded by a newer file.
+    if (myGeneration !== decodeGeneration) return null; // Superseded by a newer file.
 
     detectedNotes = notes;
     renderNoteResults(notes);
     detectProgressSection.classList.add('hidden');
+    result = notes;
   } catch (err) {
-    if (myGeneration !== decodeGeneration) return;
+    if (myGeneration !== decodeGeneration) return null;
     console.error('Note detection failed:', err);
     setDetectStatus(`Note detection failed: ${err && err.message ? err.message : err}`, true);
   } finally {
@@ -222,8 +254,67 @@ async function runNoteDetection(prepared, myGeneration) {
     setImportLocked(false);
     if (myGeneration === decodeGeneration) {
       detectBtn.disabled = false;
+      convertBtn.disabled = false;
     }
   }
+  return result;
+}
+
+async function generateAndDownloadMidi(prepared, myGeneration) {
+  convertBtn.disabled = true;
+  midiResult.classList.add('hidden');
+  setConvertStatus('');
+
+  try {
+    let notes = detectedNotes;
+    if (!notes) {
+      setConvertStatus('Detecting notes first…');
+      notes = await runNoteDetection(prepared, myGeneration);
+      if (!notes) return; // Detection failed or was superseded; error already shown.
+    }
+
+    if (myGeneration !== decodeGeneration) return;
+
+    setConvertStatus('Building MIDI file…');
+    const trackName = selectedFile ? selectedFile.name.replace(/\.[^./]+$/, '') : 'JRRD_MIDIFY';
+    const blob = buildMidiBlob(notes, { trackName: trackName || 'JRRD_MIDIFY' });
+    const downloadName = suggestMidiFileName(selectedFile ? selectedFile.name : 'output');
+
+    if (midiObjectUrl) {
+      URL.revokeObjectURL(midiObjectUrl);
+    }
+    midiObjectUrl = URL.createObjectURL(blob);
+
+    triggerDownload(midiObjectUrl, downloadName);
+
+    midiResultSummary.textContent =
+      `Generated ${downloadName} · ${notes.length.toLocaleString()} note${notes.length === 1 ? '' : 's'} · ${formatBytes(blob.size)}`;
+    midiDownloadLink.href = midiObjectUrl;
+    midiDownloadLink.download = downloadName;
+    midiResult.classList.remove('hidden');
+    setConvertStatus('');
+  } catch (err) {
+    console.error('MIDI generation failed:', err);
+    setConvertStatus(`MIDI generation failed: ${err && err.message ? err.message : err}`, true);
+  } finally {
+    if (myGeneration === decodeGeneration) {
+      convertBtn.disabled = false;
+    }
+  }
+}
+
+function triggerDownload(url, downloadName) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = downloadName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function setConvertStatus(message, isError = false) {
+  convertStatus.textContent = message;
+  convertStatus.classList.toggle('error', isError);
 }
 
 function setImportLocked(locked) {
@@ -309,6 +400,16 @@ function resetSelection() {
   detectProgressSection.classList.add('hidden');
   noteResults.classList.add('hidden');
   setDetectStatus('');
+
+  processCard.classList.add('disabled-card');
+  convertHint.textContent = 'Import an audio file above first.';
+  convertBtn.disabled = true;
+  midiResult.classList.add('hidden');
+  setConvertStatus('');
+  if (midiObjectUrl) {
+    URL.revokeObjectURL(midiObjectUrl);
+    midiObjectUrl = null;
+  }
 }
 
 function showError(message) {
