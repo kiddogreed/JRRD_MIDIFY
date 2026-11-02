@@ -201,6 +201,29 @@ main {
   margin-top: 0.85rem;
 }
 
+.waveform-wrap {
+  margin-top: 0.85rem;
+}
+
+#waveformCanvas {
+  width: 100%;
+  height: 110px;
+  display: block;
+  background: rgba(56, 189, 248, 0.05);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+}
+
+.decode-status {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.decode-status.error {
+  color: var(--danger);
+}
+
 .btn {
   display: inline-block;
   width: 100%;

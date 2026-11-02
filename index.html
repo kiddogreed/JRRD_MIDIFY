@@ -40,6 +40,11 @@
             <button type="button" class="btn-icon" id="removeFileBtn" title="Remove file" aria-label="Remove file">✕</button>
           </div>
           <audio id="audioPreview" controls preload="metadata"></audio>
+
+          <div class="waveform-wrap">
+            <canvas id="waveformCanvas" height="110"></canvas>
+            <p class="decode-status" id="decodeStatus"></p>
+          </div>
         </div>
       </section>
 

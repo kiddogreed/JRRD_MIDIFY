@@ -7,9 +7,128 @@ read the latest entry's "Next steps" section to know where to resume.
 
 ---
 
-## [Unreleased] — Step 1: Project scaffold + audio import UI
+## [Unreleased] — Step 3: Basic Pitch model integration (not started)
 
-**Date:** 2026-11-02
+Proposed next step — requires user confirmation before implementation, per
+the project's step-by-step-with-confirmation workflow. See "Next steps"
+under Step 2 below for the detailed plan.
+
+---
+
+## [Step 2] — 2026-11-02: Audio decoding, resampling & waveform preview
+
+**Status:** ✅ Complete
+
+### What was built
+
+- [js/modules/audio-decode.js](./js/modules/audio-decode.js) — pure
+  (no-DOM) helpers:
+  - `decodeAudioFile(file)` — decodes an MP3/WAV `File` into a Web Audio API
+    `AudioBuffer` via `AudioContext.decodeAudioData` (promise/callback dual
+    API normalized for older Safari).
+  - `resampleToMono(audioBuffer, targetSampleRate = 22050)` — downmixes to
+    mono and resamples to 22050 Hz using `OfflineAudioContext` (the exact
+    sample rate Spotify's Basic Pitch model requires — see Step 3 plan
+    below), letting the browser's native resampler do the heavy lifting.
+  - `decodeAndPrepare(file)` — convenience wrapper returning the original
+    `AudioBuffer`, the mono 22050 Hz `Float32Array`, and metadata (duration,
+    original sample rate, channel count, mono sample count) for the UI.
+- [js/modules/waveform.js](./js/modules/waveform.js) — pure peak computation
+  (`computePeaks`, channel-averaged min/max per pixel bucket) and canvas
+  rendering (`drawWaveform`), DPR-aware for crisp rendering on high-density
+  displays.
+- [js/app.js](./js/app.js) updated: after a file passes validation, it is
+  automatically decoded. A "decode generation" counter guards against race
+  conditions (e.g. a slow decode finishing after the user already swapped to
+  or removed a different file). Decode failures (corrupt/unsupported audio)
+  show an inline error distinct from the import-validation error, instead of
+  crashing.
+- [index.html](./index.html) / [css/style.css](./css/style.css) — added a
+  waveform `<canvas>` and a decode-status line inside the file card.
+- The resampled 22050 Hz mono buffer is computed and stored in memory
+  (`decodedAudio` in `app.js`) but not consumed yet — it's prepared for
+  Step 3's model inference, keeping this step scoped to decode + visualize
+  only, as agreed.
+
+### Key decisions
+
+- Resampling uses the browser's own `OfflineAudioContext` rather than a
+  hand-rolled resampler — it is correct (band-limited, avoids aliasing) and
+  requires no extra dependency.
+- Waveform is rendered from the *original* decoded `AudioBuffer` (not the
+  downsampled mono copy) so the preview reflects the true source audio;
+  channels are averaged only for the visual, not for analysis.
+- `decodeAudioFile` always closes its temporary `AudioContext` immediately
+  after decoding (decoding doesn't need an open/running context), avoiding
+  resource/context-limit leaks if a user imports many files in one session.
+
+### How to verify this step
+
+1. Serve the folder statically and open `index.html`.
+2. Import a valid `.wav` (and a valid `.mp3`) file — confirm the waveform
+   draws and the decode-status line reports duration, original sample rate,
+   channel count, and the prepared 22050 Hz sample count.
+3. Import a corrupted/non-audio file renamed to `.wav` — confirm an inline
+   decode error appears (distinct from the import-type validation error) and
+   the app does not crash.
+4. Rapidly swap between two files — confirm the status/waveform shown always
+   matches the *last* selected file (no stale results from a superseded
+   decode).
+5. Click "✕" to remove the file — confirm the waveform canvas and decode
+   status are cleared.
+
+Verified via automated Playwright-driven browser checks against a locally
+served copy (valid stereo WAV decode, corrupt-file error path, rapid file
+swap race-guard, and remove/reset) — all passed.
+
+### Next steps (pick up here)
+
+**Step 3 (proposed, not started — requires user confirmation):** Basic
+Pitch model integration.
+- Download and self-host the Basic Pitch TFJS model weights
+  (`model.json` + ~0.9 MB weight shard, from `@spotify/basic-pitch@1.0.1`)
+  under a new `model/` folder in this repo.
+- Load `@spotify/basic-pitch` and its `@tensorflow/tfjs` dependency via an
+  `esm.sh` CDN import (no build step/bundler needed — see architecture
+  decision in the Step 1 entry below).
+- Run `BasicPitch.evaluateModel()` on the mono 22050 Hz buffer already
+  prepared by Step 2's `decodeAndPrepare()`, wiring its percent-callback to
+  a visible progress bar (inference runs in ~2-second chunks internally).
+- Feed the resulting frames/onsets/contours through the library's
+  `outputToNotesPoly` + `addPitchBendsToNoteEvents` + `noteFramesToTime` to
+  get a first list of note events — still no MIDI *file* export yet (that's
+  Step 4), just getting raw note data flowing end-to-end and sanity-checked
+  (e.g. logged note count / a simple on-screen list) before building the
+  custom MIDI writer on top of it.
+
+**Step 4 (planned):** Implement the custom SMF/MIDI writer (tempo, pitch
+bends, note velocity from amplitude, track metadata) and wire the "Download
+.midi" flow.
+
+**Step 5 (planned):** Accuracy/post-processing pass — tunable
+sensitivity/polyphony controls, minimum note duration, note stitching across
+short gaps, and a before-download note/piano-roll preview so users can spot
+missing or garbled notes before exporting.
+
+**Step 6 (planned):** Polish pass — progress UX, error handling for
+decode failures, large-file handling/chunking guidance, accessibility pass,
+and updating `README.md` + the GitHub Pages hosting guide to reflect the
+final architecture.
+
+### Notes for whoever continues this (human or AI)
+
+- `decodedAudio` (set in [js/app.js](./js/app.js)) already holds
+  `{ audioBuffer, monoSamples, modelSampleRate, meta }` for the currently
+  selected file — Step 3 should consume `decodedAudio.monoSamples` directly
+  rather than re-decoding.
+- Keep honoring the `decodeGeneration` race-guard pattern when adding the
+  (much longer-running) model inference step — wrap it the same way so a
+  fast file-swap during inference doesn't corrupt the UI.
+
+---
+
+## [Step 1] — 2026-11-02: Project scaffold + audio import UI
+
 **Status:** ✅ Complete
 
 ### What was built
@@ -87,35 +206,8 @@ Decision (confirmed with user via prompt on 2026-11-02):
    (e.g. `.txt`) shows an inline error instead.
 4. Confirm the "Convert to MIDI" button is visibly present but disabled.
 
-### Next steps (pick up here)
-
-**Step 2 (proposed, not started — requires user confirmation before
-implementation per project rules):** Audio decoding pipeline.
-- Decode the selected file via `AudioContext.decodeAudioData`.
-- Resample/downmix to mono 22050 Hz (the sample rate Basic Pitch's model
-  requires) using `OfflineAudioContext`.
-- Render a waveform preview on a `<canvas>`.
-- Still no ML/MIDI conversion yet — just decode + visualize, to keep steps
-  small and reviewable.
-
-**Step 3 (planned):** Wire up `@spotify/basic-pitch` via `esm.sh`, download
-and self-host the model weights under `model/`, run inference on the decoded
-audio, and surface a progress bar (the model evaluates in chunks and already
-supports a percent callback).
-
-**Step 4 (planned):** Implement the custom SMF/MIDI writer (tempo, pitch
-bends, note velocity from amplitude, track metadata) and wire the "Download
-.midi" flow.
-
-**Step 5 (planned):** Accuracy/post-processing pass — tunable
-sensitivity/polyphony controls, minimum note duration, note stitching across
-short gaps, and a before-download note/piano-roll preview so users can spot
-missing or garbled notes before exporting.
-
-**Step 6 (planned):** Polish pass — progress UX, error handling for
-decode failures, large-file handling/chunking guidance, accessibility pass,
-and updating `README.md` + the GitHub Pages hosting guide to reflect the
-final architecture.
+(See Step 2's entry above for what was built next, and the top of this file
+for the current/next step.)
 
 ### Notes for whoever continues this (human or AI)
 

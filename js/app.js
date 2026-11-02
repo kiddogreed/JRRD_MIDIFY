@@ -1,9 +1,12 @@
-// JRRD_MIDIFY — App entry point (Step 1: import / attach audio file).
-// Wires up drag-and-drop + file picker UI and delegates validation to
-// js/modules/file-import.js. Processing/conversion logic will be added
-// in subsequent steps (see changelog.md).
+// JRRD_MIDIFY — App entry point (Step 1: import UI, Step 2: audio decoding).
+// Wires up drag-and-drop + file picker UI, delegates validation to
+// js/modules/file-import.js, and decoding/resampling/waveform rendering to
+// js/modules/audio-decode.js and js/modules/waveform.js. Pitch-detection and
+// MIDI export land in later steps (see changelog.md).
 
 import { validateAudioFile, formatBytes, formatDuration, getExtension } from './modules/file-import.js';
+import { decodeAndPrepare } from './modules/audio-decode.js';
+import { drawWaveform } from './modules/waveform.js';
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -14,9 +17,15 @@ const fileSub = document.getElementById('fileSub');
 const audioPreview = document.getElementById('audioPreview');
 const removeFileBtn = document.getElementById('removeFileBtn');
 const convertBtn = document.getElementById('convertBtn');
+const waveformCanvas = document.getElementById('waveformCanvas');
+const decodeStatus = document.getElementById('decodeStatus');
 
 let selectedFile = null;
 let objectUrl = null;
+let decodedAudio = null; // Populated by decodeSelectedFile(); consumed by later steps.
+// Guards against a slow decode finishing after the user has already picked
+// a different file (or removed the selection).
+let decodeGeneration = 0;
 
 // --- Drop zone interactions ---------------------------------------------
 
@@ -75,6 +84,9 @@ function handleFile(file) {
 
   clearError();
   selectedFile = file;
+  decodedAudio = null;
+  decodeGeneration += 1;
+  const myGeneration = decodeGeneration;
 
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl);
@@ -94,12 +106,46 @@ function handleFile(file) {
   );
 
   fileCard.classList.remove('hidden');
-  // Convert button stays disabled until the processing engine (Step 2) lands.
+  // Convert button stays disabled until the processing engine (Step 3) lands.
   convertBtn.disabled = true;
+
+  decodeSelectedFile(file, myGeneration);
+}
+
+async function decodeSelectedFile(file, myGeneration) {
+  setDecodeStatus('Decoding audio…');
+  try {
+    const prepared = await decodeAndPrepare(file);
+    if (myGeneration !== decodeGeneration) return; // A newer file was selected meanwhile.
+
+    decodedAudio = prepared;
+    drawWaveform(waveformCanvas, prepared.audioBuffer);
+
+    const { durationSeconds, originalSampleRate, numberOfChannels, monoSampleCount } = prepared.meta;
+    setDecodeStatus(
+      `Decoded: ${formatDuration(durationSeconds)} · ${originalSampleRate.toLocaleString()} Hz · ` +
+        `${numberOfChannels === 1 ? 'mono' : `${numberOfChannels}ch`} ` +
+        `· prepared ${monoSampleCount.toLocaleString()} samples @ ${prepared.modelSampleRate} Hz for analysis`
+    );
+  } catch (err) {
+    if (myGeneration !== decodeGeneration) return;
+    console.error('Audio decoding failed:', err);
+    setDecodeStatus(
+      `Could not decode this file — it may be corrupted or in an unsupported format. (${err && err.message ? err.message : err})`,
+      true
+    );
+  }
+}
+
+function setDecodeStatus(message, isError = false) {
+  decodeStatus.textContent = message;
+  decodeStatus.classList.toggle('error', isError);
 }
 
 function resetSelection() {
   selectedFile = null;
+  decodedAudio = null;
+  decodeGeneration += 1;
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl);
     objectUrl = null;
@@ -109,6 +155,9 @@ function resetSelection() {
   fileCard.classList.add('hidden');
   convertBtn.disabled = true;
   clearError();
+  setDecodeStatus('');
+  const ctx = waveformCanvas.getContext('2d');
+  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
 }
 
 function showError(message) {
