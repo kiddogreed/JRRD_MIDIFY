@@ -48,11 +48,38 @@
         </div>
       </section>
 
-      <!-- Step 2+: Processing & conversion (coming soon) -->
+      <!-- Step 3: Note detection preview (Basic Pitch ML inference) -->
+      <section class="card disabled-card" id="detectCard">
+        <h2 class="step-heading"><span class="step-badge">2</span> Detect Notes <span class="badge-preview">preview</span></h2>
+        <p class="coming-soon" id="detectHint">Import an audio file above first.</p>
+        <button type="button" class="btn primary" id="detectBtn" disabled>Detect Notes</button>
+
+        <div class="progress-section hidden" id="detectProgressSection">
+          <div class="progress-bar-container">
+            <div class="progress-bar" id="detectProgressBar"></div>
+          </div>
+          <p class="decode-status" id="detectStatus"></p>
+        </div>
+
+        <div class="note-results hidden" id="noteResults">
+          <p class="note-summary" id="noteSummary"></p>
+          <div class="note-table-wrap">
+            <table class="note-table">
+              <thead>
+                <tr><th>Start</th><th>Dur.</th><th>Note</th><th>Vel.</th></tr>
+              </thead>
+              <tbody id="noteTableBody"></tbody>
+            </table>
+          </div>
+          <p class="note-table-footnote hidden" id="noteTableFootnote"></p>
+        </div>
+      </section>
+
+      <!-- Step 4+: MIDI export (coming soon) -->
       <section class="card disabled-card" id="processCard">
-        <h2 class="step-heading"><span class="step-badge">2</span> Convert to MIDI</h2>
-        <p class="coming-soon">Processing engine is not implemented yet — coming in the next step.</p>
-        <button type="button" class="btn primary" id="convertBtn" disabled>Process &amp; Convert to MIDI</button>
+        <h2 class="step-heading"><span class="step-badge">3</span> Convert to MIDI</h2>
+        <p class="coming-soon">MIDI file export is not implemented yet — coming in the next step.</p>
+        <button type="button" class="btn primary" id="convertBtn" disabled>Download .midi File</button>
       </section>
     </main>
 

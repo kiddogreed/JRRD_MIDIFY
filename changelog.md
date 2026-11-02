@@ -7,11 +7,183 @@ read the latest entry's "Next steps" section to know where to resume.
 
 ---
 
-## [Unreleased] — Step 3: Basic Pitch model integration (not started)
+## [Unreleased] — Step 4: Custom MIDI (.midi) file writer (not started)
 
 Proposed next step — requires user confirmation before implementation, per
 the project's step-by-step-with-confirmation workflow. See "Next steps"
-under Step 2 below for the detailed plan.
+under Step 3 below for the detailed plan.
+
+---
+
+## [Step 3] — 2026-11-02: Basic Pitch model integration (note detection preview)
+
+**Status:** ✅ Complete
+
+### What was built
+
+- [js/modules/basic-pitch.js](./js/modules/basic-pitch.js) — loads
+  `@spotify/basic-pitch` + its `@tensorflow/tfjs` dependency from the
+  `esm.sh` CDN (no bundler), and exposes `detectNotes(monoSamples, options)`
+  which runs the model's chunked `evaluateModel()` inference, then pipes the
+  raw frames/onsets/contours through the library's own
+  `outputToNotesPoly` → `addPitchBendsToNoteEvents` → `noteFramesToTime` to
+  produce note events: `{ startTimeSeconds, durationSeconds, pitchMidi,
+  amplitude, pitchBends }`. `onsetThreshold`, `frameThreshold`, and
+  `minNoteLengthFrames` are exposed as tunable options (not yet surfaced in
+  the UI — see Step 5).
+- [js/modules/music-utils.js](./js/modules/music-utils.js) — small shared
+  helpers: `midiToNoteName` (MIDI number → e.g. "C4") and
+  `amplitudeToVelocity` (Basic Pitch amplitude → MIDI velocity 1-127), for
+  reuse by this step's preview table and Step 4's MIDI writer.
+- [index.html](./index.html) / [css/style.css](./css/style.css) — added a
+  new "2. Detect Notes (preview)" card between Import and Convert: a
+  "Detect Notes" button, a progress bar driven by the model's percent
+  callback, and a results view (summary line + scrollable note table,
+  capped at 300 rendered rows with a footnote if more were detected). The
+  "Convert to MIDI" card is renumbered to step 3 and still disabled — it
+  will consume `detectedNotes` once Step 4 lands.
+- [js/app.js](./js/app.js) wiring:
+  - The Detect Notes button enables once decoding succeeds, and triggers
+    `detectNotes()` on the Step 2 mono 22050 Hz buffer.
+  - **Import is locked while detection is running** (drop zone, file input,
+    and remove button all disabled, with an inline explanatory error if the
+    user tries to swap files) — see "Bug found & fixed" below for why.
+  - Detected notes are stored in `detectedNotes` for the next step to
+    consume; detection errors surface inline without crashing the app.
+
+### Key decision: CDN-hosted model weights (deviates from the Step 1 plan)
+
+The Step 1/2 plan called for **self-hosting** the ~0.9 MB Basic Pitch model
+weights in a `model/` folder in this repo. That was attempted first, but
+**outbound binary downloads from the dev sandbox's shell/tooling are
+blocked by environment policy** (`Invoke-WebRequest` and `curl` both failed
+with a permission error that cannot be worked around from this session).
+
+Resolution: the model (`model.json` + weight shard) is instead loaded at
+**runtime, directly by the user's browser**, from the `jsdelivr` CDN
+(`https://cdn.jsdelivr.net/npm/@spotify/basic-pitch@1.0.1/model/model.json`),
+alongside the `@spotify/basic-pitch`/`@tensorflow/tfjs` module itself from
+`esm.sh`. This is functionally equivalent for end users (same bytes, same
+one-time download), just not vendored into this git repo. Verified working
+end-to-end with real browser `fetch` calls (see "How to verify" below).
+
+**To self-host later** (optional, e.g. for stricter offline support or to
+remove the runtime CDN dependency): download
+`https://unpkg.com/@spotify/basic-pitch@1.0.1/model/model.json` and the
+sibling `group1-shard1of1.bin` into a `model/` folder in this repo, then
+change `MODEL_URL` in `js/modules/basic-pitch.js` to `'./model/model.json'`.
+No other code changes are needed.
+
+### Bug found & fixed during verification: overlapping detection runs
+
+Initial testing (rapidly swapping files while a detection was in flight)
+surfaced a real concurrency bug: `js/modules/basic-pitch.js` holds a single
+shared `BasicPitch` model instance, and nothing stopped a second
+`detectNotes()` call from starting while a prior (now-superseded) one was
+still executing in the background. The existing "generation" guard only
+discarded the *stale result* at the end — it didn't stop the stale run from
+executing — so two overlapping `evaluateModel()` calls ended up contending
+for the same TF.js graph/backend simultaneously, causing severe slowdown
+(observed: a 1-second clip took over a minute to resolve instead of a few
+seconds).
+
+**Fix:** file import/removal is now locked (disabled, with an inline
+message) for the whole duration of a detection run, so a second detection
+can never start while one is already in flight. This is simpler and more
+robust than true cancellation (which would require re-implementing the
+library's internal chunk loop to check an abort flag) and is an acceptable
+UX trade-off since detection is the point of this step. Re-verified after
+the fix: attempting to swap files mid-detection now shows an inline block
+message instead of racing, and import unlocks automatically once detection
+settles (success or error).
+
+### Key decisions
+
+- Detection threshold defaults (`onsetThreshold=0.25`, `frameThreshold=0.25`,
+  `minNoteLengthFrames=5`) are the library's own published defaults from its
+  README usage example — not yet tuned. Tuning these (and exposing sliders
+  for them) is deferred to Step 5 so this step stays focused on "does the
+  pipeline work correctly end-to-end".
+- The preview table is capped at 300 rendered rows (with an accurate total
+  count) purely to keep the DOM light for dense polyphonic pieces; all
+  detected notes are kept in the `detectedNotes` in-memory array regardless
+  of how many are rendered.
+
+### How to verify this step
+
+1. Serve the folder statically and open `index.html`.
+2. Import a `.wav`/`.mp3` file and wait for it to decode (Step 2). The
+   "Detect Notes" button should enable.
+3. Click "Detect Notes". A progress bar should advance to 100%, then a
+   summary line (note count, pitch range, duration) and a note table
+   should appear.
+4. Try importing a different file *while* detection is running — confirm
+   an inline message blocks it instead of corrupting the UI, and that
+   importing becomes available again once detection finishes.
+5. Click "✕" to remove the file — confirm the Detect Notes card, progress
+   bar, and results all reset to their initial disabled/empty state.
+
+Verified via automated Playwright-driven browser checks against a locally
+served copy:
+- A 4-note synthetic arpeggio (C4→E4→G4→C5, 0.5 s each) was detected as
+  **exactly 4 notes**, correctly named, with start times ~0.00/0.49/0.96/1.50 s
+  (matching the generated audio almost exactly) and durations ~0.5 s each.
+- A 1-second 196 Hz tone was detected as a single **G3** note.
+- The concurrent-detection bug described above was reproduced, fixed, and
+  re-verified (swap now blocked cleanly; normal swap works immediately
+  after detection completes).
+- Remove/reset correctly clears all Step 3 UI state.
+
+### Next steps (pick up here)
+
+**Step 4 (proposed, not started — requires user confirmation):** Custom
+MIDI (.midi) file writer + download flow.
+- Implement a from-scratch Standard MIDI File (SMF) Type 0 or Type 1
+  encoder in a new `js/modules/midi-writer.js` (no dependency on
+  `@tonejs/midi`'s own exporter, which relies on Node's `Buffer` — see Step 1
+  entry's architecture decision) — variable-length quantities, a tempo meta
+  event (derive BPM or default to 120), time signature, track name, Note
+  On/Off events built from `detectedNotes`' start/duration/velocity, and
+  **pitch-bend reconstruction**: convert each note's `pitchBends` array into
+  MIDI Pitch Bend events plus an RPN 0,0 (pitch-bend-range) message so bent
+  notes play back correctly in any DAW/player.
+- Wire the "Convert to MIDI" button: consume `detectedNotes` (running
+  detection first if not already run for the current file), build the SMF
+  byte stream, create a `Blob`/object URL, and enable a real download link
+  (replacing today's permanently-disabled placeholder).
+- Validate the generated file: confirm it opens correctly in at least one
+  external tool (e.g. a DAW, `midicsv`, or a browser-based MIDI player) and
+  that note count/timing/pitch match the Step 3 preview table.
+
+**Step 5 (planned):** Accuracy/post-processing pass — tunable
+sensitivity/polyphony controls (surface `onsetThreshold`/`frameThreshold`/
+`minNoteLengthFrames` as UI sliders), minimum note duration, note stitching
+across short gaps, and a before-download note/piano-roll preview so users
+can spot missing or garbled notes before exporting.
+
+**Step 6 (planned):** Polish pass — progress UX, large-file handling/
+chunking guidance, accessibility pass, a Web Worker for model inference
+(so the main thread/UI doesn't momentarily block during each chunk — noted
+as a nice-to-have during this step's testing, not required for correctness),
+and updating `README.md` + the GitHub Pages hosting guide to reflect the
+final architecture.
+
+### Notes for whoever continues this (human or AI)
+
+- `detectedNotes` (set in [js/app.js](./js/app.js)) holds the full array of
+  `{ startTimeSeconds, durationSeconds, pitchMidi, amplitude, pitchBends }`
+  objects for the currently selected file once detection has run — Step 4
+  should consume this directly rather than re-running detection, *unless*
+  the user changed detection-affecting settings (not applicable yet, since
+  thresholds aren't UI-exposed until Step 5).
+- Keep the "lock import while busy" pattern from this step's bug-fix when
+  adding Step 4's MIDI generation, if that turns out to be slow enough to
+  matter (it shouldn't be — SMF encoding is cheap pure JS — but re-running
+  detection as part of "Convert to MIDI" would need the same lock).
+- The shared `BasicPitch` singleton in `js/modules/basic-pitch.js` is
+  intentional (avoids re-downloading/recompiling the model on every click);
+  just remember it means only one detection may run at a time app-wide
+  (enforced by `isDetecting` in `js/app.js`).
 
 ---
 
@@ -83,43 +255,14 @@ swap race-guard, and remove/reset) — all passed.
 
 ### Next steps (pick up here)
 
-**Step 3 (proposed, not started — requires user confirmation):** Basic
-Pitch model integration.
-- Download and self-host the Basic Pitch TFJS model weights
-  (`model.json` + ~0.9 MB weight shard, from `@spotify/basic-pitch@1.0.1`)
-  under a new `model/` folder in this repo.
-- Load `@spotify/basic-pitch` and its `@tensorflow/tfjs` dependency via an
-  `esm.sh` CDN import (no build step/bundler needed — see architecture
-  decision in the Step 1 entry below).
-- Run `BasicPitch.evaluateModel()` on the mono 22050 Hz buffer already
-  prepared by Step 2's `decodeAndPrepare()`, wiring its percent-callback to
-  a visible progress bar (inference runs in ~2-second chunks internally).
-- Feed the resulting frames/onsets/contours through the library's
-  `outputToNotesPoly` + `addPitchBendsToNoteEvents` + `noteFramesToTime` to
-  get a first list of note events — still no MIDI *file* export yet (that's
-  Step 4), just getting raw note data flowing end-to-end and sanity-checked
-  (e.g. logged note count / a simple on-screen list) before building the
-  custom MIDI writer on top of it.
-
-**Step 4 (planned):** Implement the custom SMF/MIDI writer (tempo, pitch
-bends, note velocity from amplitude, track metadata) and wire the "Download
-.midi" flow.
-
-**Step 5 (planned):** Accuracy/post-processing pass — tunable
-sensitivity/polyphony controls, minimum note duration, note stitching across
-short gaps, and a before-download note/piano-roll preview so users can spot
-missing or garbled notes before exporting.
-
-**Step 6 (planned):** Polish pass — progress UX, error handling for
-decode failures, large-file handling/chunking guidance, accessibility pass,
-and updating `README.md` + the GitHub Pages hosting guide to reflect the
-final architecture.
+(See Step 3's entry above for what was built next, and the top of this file
+for the current/next step.)
 
 ### Notes for whoever continues this (human or AI)
 
 - `decodedAudio` (set in [js/app.js](./js/app.js)) already holds
   `{ audioBuffer, monoSamples, modelSampleRate, meta }` for the currently
-  selected file — Step 3 should consume `decodedAudio.monoSamples` directly
+  selected file — Step 3 consumes `decodedAudio.monoSamples` directly
   rather than re-decoding.
 - Keep honoring the `decodeGeneration` race-guard pattern when adding the
   (much longer-running) model inference step — wrap it the same way so a
