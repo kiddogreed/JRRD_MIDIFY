@@ -1,16 +1,19 @@
 // JRRD_MIDIFY — App entry point.
 // Step 1: import UI. Step 2: audio decoding. Step 3: note detection preview.
-// Step 4: MIDI (.midi) file export.
+// Step 4: MIDI (.midi) file export. Step 5: tunable detection accuracy +
+// note-stitching post-processing.
 // Wires up drag-and-drop + file picker UI, delegates validation to
 // js/modules/file-import.js, decoding/resampling/waveform rendering to
 // js/modules/audio-decode.js / js/modules/waveform.js, ML note detection to
-// js/modules/basic-pitch.js, and Standard MIDI File encoding to
+// js/modules/basic-pitch.js, note-stitching to
+// js/modules/note-postprocess.js, and Standard MIDI File encoding to
 // js/modules/midi-writer.js (see changelog.md).
 
 import { validateAudioFile, formatBytes, formatDuration, getExtension } from './modules/file-import.js';
 import { decodeAndPrepare } from './modules/audio-decode.js';
 import { drawWaveform } from './modules/waveform.js';
-import { detectNotes } from './modules/basic-pitch.js';
+import { detectNotes, MODEL_FRAME_SECONDS } from './modules/basic-pitch.js';
+import { stitchNotes } from './modules/note-postprocess.js';
 import { midiToNoteName, amplitudeToVelocity } from './modules/music-utils.js';
 import { buildMidiBlob, suggestMidiFileName } from './modules/midi-writer.js';
 
@@ -36,6 +39,18 @@ const noteSummary = document.getElementById('noteSummary');
 const noteTableBody = document.getElementById('noteTableBody');
 const noteTableFootnote = document.getElementById('noteTableFootnote');
 
+const onsetSensitivityInput = document.getElementById('onsetSensitivity');
+const onsetSensitivityVal = document.getElementById('onsetSensitivityVal');
+const sustainThresholdInput = document.getElementById('sustainThreshold');
+const sustainThresholdVal = document.getElementById('sustainThresholdVal');
+const minNoteLengthInput = document.getElementById('minNoteLength');
+const minNoteLengthVal = document.getElementById('minNoteLengthVal');
+const stitchGapInput = document.getElementById('stitchGap');
+const stitchGapVal = document.getElementById('stitchGapVal');
+const resetSettingsBtn = document.getElementById('resetSettingsBtn');
+const DETECTION_SETTING_INPUTS = [onsetSensitivityInput, sustainThresholdInput, minNoteLengthInput, stitchGapInput];
+const DEFAULT_DETECTION_SETTINGS = { onsetSensitivity: 0.25, sustainThreshold: 0.25, minNoteLength: 5, stitchGap: 60 };
+
 const processCard = document.getElementById('processCard');
 const convertHint = document.getElementById('convertHint');
 const convertBtn = document.getElementById('convertBtn');
@@ -59,6 +74,55 @@ let isDetecting = false;
 // Guards against a slow decode/detection finishing after the user has
 // already picked a different file (or removed the selection).
 let decodeGeneration = 0;
+
+// --- Detection settings ---------------------------------------------------
+
+updateSliderLabels();
+
+DETECTION_SETTING_INPUTS.forEach((input) => {
+  input.addEventListener('input', () => {
+    updateSliderLabels();
+    invalidateCachedDetection();
+  });
+});
+
+resetSettingsBtn.addEventListener('click', () => {
+  onsetSensitivityInput.value = DEFAULT_DETECTION_SETTINGS.onsetSensitivity;
+  sustainThresholdInput.value = DEFAULT_DETECTION_SETTINGS.sustainThreshold;
+  minNoteLengthInput.value = DEFAULT_DETECTION_SETTINGS.minNoteLength;
+  stitchGapInput.value = DEFAULT_DETECTION_SETTINGS.stitchGap;
+  updateSliderLabels();
+  invalidateCachedDetection();
+});
+
+function updateSliderLabels() {
+  onsetSensitivityVal.textContent = parseFloat(onsetSensitivityInput.value).toFixed(2);
+  sustainThresholdVal.textContent = parseFloat(sustainThresholdInput.value).toFixed(2);
+  const minLenMs = Math.round(parseInt(minNoteLengthInput.value, 10) * MODEL_FRAME_SECONDS * 1000);
+  minNoteLengthVal.textContent = `${minLenMs} ms`;
+  stitchGapVal.textContent = `${stitchGapInput.value} ms`;
+}
+
+function readDetectionSettings() {
+  return {
+    onsetThreshold: parseFloat(onsetSensitivityInput.value),
+    frameThreshold: parseFloat(sustainThresholdInput.value),
+    minNoteLengthFrames: parseInt(minNoteLengthInput.value, 10),
+    stitchGapSeconds: parseInt(stitchGapInput.value, 10) / 1000,
+  };
+}
+
+/** Called whenever a detection setting changes: any cached results no
+ * longer reflect the current settings, so they must not be reused silently
+ * (e.g. by clicking "Convert to MIDI" without re-running detection). */
+function invalidateCachedDetection() {
+  if (isDetecting) return; // Settings inputs are locked during a run anyway.
+  detectedNotes = null;
+  noteResults.classList.add('hidden');
+  midiResult.classList.add('hidden');
+  setDetectStatus('');
+  setConvertStatus('');
+}
 
 // --- Drop zone interactions ---------------------------------------------
 
@@ -229,9 +293,14 @@ async function runNoteDetection(prepared, myGeneration) {
   detectProgressBar.style.width = '0%';
   setDetectStatus('Loading Basic Pitch model…');
 
+  const settings = readDetectionSettings();
+
   let result = null;
   try {
-    const notes = await detectNotes(prepared.monoSamples, {
+    const rawNotes = await detectNotes(prepared.monoSamples, {
+      onsetThreshold: settings.onsetThreshold,
+      frameThreshold: settings.frameThreshold,
+      minNoteLengthFrames: settings.minNoteLengthFrames,
       onProgress: (pct) => {
         if (myGeneration !== decodeGeneration) return;
         detectProgressBar.style.width = `${Math.round(pct * 100)}%`;
@@ -241,8 +310,10 @@ async function runNoteDetection(prepared, myGeneration) {
 
     if (myGeneration !== decodeGeneration) return null; // Superseded by a newer file.
 
+    const notes = stitchNotes(rawNotes, { maxGapSeconds: settings.stitchGapSeconds });
+
     detectedNotes = notes;
-    renderNoteResults(notes);
+    renderNoteResults(notes, rawNotes.length);
     detectProgressSection.classList.add('hidden');
     result = notes;
   } catch (err) {
@@ -322,9 +393,13 @@ function setImportLocked(locked) {
   dropZone.classList.toggle('locked', locked);
   dropZone.setAttribute('aria-disabled', String(locked));
   removeFileBtn.disabled = locked;
+  DETECTION_SETTING_INPUTS.forEach((input) => {
+    input.disabled = locked;
+  });
+  resetSettingsBtn.disabled = locked;
 }
 
-function renderNoteResults(notes) {
+function renderNoteResults(notes, rawFragmentCount) {
   noteResults.classList.remove('hidden');
 
   if (notes.length === 0) {
@@ -338,11 +413,15 @@ function renderNoteResults(notes) {
   const minPitch = Math.min(...pitches);
   const maxPitch = Math.max(...pitches);
   const lastNoteEnd = Math.max(...notes.map((n) => n.startTimeSeconds + n.durationSeconds));
+  const stitchedCount = typeof rawFragmentCount === 'number' ? rawFragmentCount - notes.length : 0;
 
   noteSummary.textContent =
     `Detected ${notes.length.toLocaleString()} note${notes.length === 1 ? '' : 's'} · ` +
     `pitch range ${midiToNoteName(minPitch)}–${midiToNoteName(maxPitch)} · ` +
-    `spanning ${formatDuration(lastNoteEnd)}`;
+    `spanning ${formatDuration(lastNoteEnd)}` +
+    (stitchedCount > 0
+      ? ` · stitched ${stitchedCount} fragment${stitchedCount === 1 ? '' : 's'} back into held notes`
+      : '');
 
   const sorted = [...notes].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
   const rowsToRender = sorted.slice(0, MAX_NOTE_ROWS_RENDERED);

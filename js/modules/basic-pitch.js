@@ -14,6 +14,11 @@
 const BASIC_PITCH_MODULE_URL = 'https://esm.sh/@spotify/basic-pitch@1.0.1';
 const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@spotify/basic-pitch@1.0.1/model/model.json';
 
+// Model frame rate: AUDIO_SAMPLE_RATE (22050) / FFT_HOP (256) ≈ 86.13 fps,
+// matching the constants baked into @spotify/basic-pitch's inference code.
+// Exposed so the UI can show slider values in milliseconds, not raw frames.
+export const MODEL_FRAME_SECONDS = 256 / 22050;
+
 let modulePromise = null;
 let modelInstance = null;
 
