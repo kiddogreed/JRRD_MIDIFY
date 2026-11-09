@@ -12,7 +12,7 @@
 import { validateAudioFile, formatBytes, formatDuration, getExtension } from './modules/file-import.js';
 import { decodeAndPrepare } from './modules/audio-decode.js';
 import { drawWaveform } from './modules/waveform.js';
-import { detectNotes, MODEL_FRAME_SECONDS } from './modules/basic-pitch.js';
+import { detectNotes, preloadModel, MODEL_FRAME_SECONDS } from './modules/basic-pitch.js';
 import { stitchNotes } from './modules/note-postprocess.js';
 import { midiToNoteName, amplitudeToVelocity } from './modules/music-utils.js';
 import { buildMidiBlob, suggestMidiFileName } from './modules/midi-writer.js';
@@ -60,6 +60,8 @@ const midiResultSummary = document.getElementById('midiResultSummary');
 const midiDownloadLink = document.getElementById('midiDownloadLink');
 
 const MAX_NOTE_ROWS_RENDERED = 300;
+const LARGE_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+const VERY_LONG_AUDIO_SECONDS = 8 * 60;
 
 let selectedFile = null;
 let objectUrl = null;
@@ -74,6 +76,12 @@ let isDetecting = false;
 // Guards against a slow decode/detection finishing after the user has
 // already picked a different file (or removed the selection).
 let decodeGeneration = 0;
+// Raw (pre-stitching) note output from the last full detection run, kept in
+// memory so changing only the note-stitching gap can re-apply stitchNotes()
+// without re-running the slow model. Null when no detection has run or when
+// any detection-affecting setting other than the stitch gap has changed.
+let rawDetectedNotes = null;
+let lastDetectionSettings = null;
 
 // --- Detection settings ---------------------------------------------------
 
@@ -82,7 +90,19 @@ updateSliderLabels();
 DETECTION_SETTING_INPUTS.forEach((input) => {
   input.addEventListener('input', () => {
     updateSliderLabels();
-    invalidateCachedDetection();
+    const settings = readDetectionSettings();
+    if (
+      rawDetectedNotes &&
+      lastDetectionSettings &&
+      settingsEqualExcludingStitchGap(settings, lastDetectionSettings) &&
+      settings.stitchGapSeconds !== lastDetectionSettings.stitchGapSeconds
+    ) {
+      // Only the note-stitching gap changed: re-stitch the cached raw output
+      // cheaply instead of re-running the full model.
+      reStitchCachedNotes(settings);
+    } else {
+      invalidateCachedDetection();
+    }
   });
 });
 
@@ -97,10 +117,14 @@ resetSettingsBtn.addEventListener('click', () => {
 
 function updateSliderLabels() {
   onsetSensitivityVal.textContent = parseFloat(onsetSensitivityInput.value).toFixed(2);
+  onsetSensitivityInput.setAttribute('aria-valuenow', onsetSensitivityInput.value);
   sustainThresholdVal.textContent = parseFloat(sustainThresholdInput.value).toFixed(2);
+  sustainThresholdInput.setAttribute('aria-valuenow', sustainThresholdInput.value);
   const minLenMs = Math.round(parseInt(minNoteLengthInput.value, 10) * MODEL_FRAME_SECONDS * 1000);
   minNoteLengthVal.textContent = `${minLenMs} ms`;
+  minNoteLengthInput.setAttribute('aria-valuenow', minNoteLengthInput.value);
   stitchGapVal.textContent = `${stitchGapInput.value} ms`;
+  stitchGapInput.setAttribute('aria-valuenow', stitchGapInput.value);
 }
 
 function readDetectionSettings() {
@@ -112,12 +136,44 @@ function readDetectionSettings() {
   };
 }
 
+/** True when two settings objects differ only (at most) in the stitch gap. */
+function settingsEqualExcludingStitchGap(a, b) {
+  return (
+    a &&
+    b &&
+    a.onsetThreshold === b.onsetThreshold &&
+    a.frameThreshold === b.frameThreshold &&
+    a.minNoteLengthFrames === b.minNoteLengthFrames
+  );
+}
+
+/** Re-applies stitchNotes() to the cached raw (pre-stitching) detection
+ * output using the current stitch gap, then re-renders the note results.
+ * Avoids a full model re-run when only the stitch gap slider moved. */
+function reStitchCachedNotes(settings) {
+  if (!rawDetectedNotes) return;
+  const notes = stitchNotes(rawDetectedNotes, { maxGapSeconds: settings.stitchGapSeconds });
+  detectedNotes = notes;
+  lastDetectionSettings = settings;
+  renderNoteResults(notes, rawDetectedNotes.length);
+  setDetectStatus('');
+  // Stitching changed the note list, so any previously generated MIDI is stale.
+  midiResult.classList.add('hidden');
+  setConvertStatus('');
+  if (midiObjectUrl) {
+    URL.revokeObjectURL(midiObjectUrl);
+    midiObjectUrl = null;
+  }
+}
+
 /** Called whenever a detection setting changes: any cached results no
  * longer reflect the current settings, so they must not be reused silently
  * (e.g. by clicking "Convert to MIDI" without re-running detection). */
 function invalidateCachedDetection() {
   if (isDetecting) return; // Settings inputs are locked during a run anyway.
   detectedNotes = null;
+  rawDetectedNotes = null;
+  lastDetectionSettings = null;
   noteResults.classList.add('hidden');
   midiResult.classList.add('hidden');
   setDetectStatus('');
@@ -212,6 +268,12 @@ function handleFile(file) {
 
   fileName.textContent = file.name;
   fileSub.textContent = `${getExtension(file.name).toUpperCase()} · ${formatBytes(file.size)} · loading duration…`;
+  if (file.size >= LARGE_FILE_SIZE_BYTES) {
+    setDecodeStatus(
+      'Large file detected. Decoding and note detection may take longer; for the smoothest experience, prefer clips under ~8 minutes.',
+      false
+    );
+  }
 
   audioPreview.src = objectUrl;
   audioPreview.addEventListener(
@@ -225,6 +287,8 @@ function handleFile(file) {
   fileCard.classList.remove('hidden');
 
   detectedNotes = null;
+  rawDetectedNotes = null;
+  lastDetectionSettings = null;
   detectCard.classList.add('disabled-card');
   detectHint.textContent = 'Decoding audio before notes can be detected…';
   detectBtn.disabled = true;
@@ -255,13 +319,21 @@ async function decodeSelectedFile(file, myGeneration) {
     drawWaveform(waveformCanvas, prepared.audioBuffer);
 
     const { durationSeconds, originalSampleRate, numberOfChannels, monoSampleCount } = prepared.meta;
+    const longAudioHint =
+      durationSeconds > VERY_LONG_AUDIO_SECONDS
+        ? ' · long recording: processing can take several minutes; splitting the source into smaller sections may feel faster'
+        : '';
     setDecodeStatus(
       `Decoded: ${formatDuration(durationSeconds)} · ${originalSampleRate.toLocaleString()} Hz · ` +
         `${numberOfChannels === 1 ? 'mono' : `${numberOfChannels}ch`} ` +
-        `· prepared ${monoSampleCount.toLocaleString()} samples @ ${prepared.modelSampleRate} Hz for analysis`
+        `· prepared ${monoSampleCount.toLocaleString()} samples @ ${prepared.modelSampleRate} Hz for analysis` +
+        longAudioHint
     );
 
     enableProcessingCards();
+    preloadModel().catch((error) => {
+      console.warn('Model preloading failed; first detection may take longer.', error);
+    });
   } catch (err) {
     if (myGeneration !== decodeGeneration) return;
     console.error('Audio decoding failed:', err);
@@ -291,6 +363,7 @@ async function runNoteDetection(prepared, myGeneration) {
   noteResults.classList.add('hidden');
   detectProgressSection.classList.remove('hidden');
   detectProgressBar.style.width = '0%';
+  detectProgressBar.setAttribute('aria-valuenow', '0');
   setDetectStatus('Loading Basic Pitch model…');
 
   const settings = readDetectionSettings();
@@ -303,8 +376,10 @@ async function runNoteDetection(prepared, myGeneration) {
       minNoteLengthFrames: settings.minNoteLengthFrames,
       onProgress: (pct) => {
         if (myGeneration !== decodeGeneration) return;
-        detectProgressBar.style.width = `${Math.round(pct * 100)}%`;
-        setDetectStatus(`Analyzing audio… ${Math.round(pct * 100)}%`);
+        const progressPercent = Math.round(pct * 100);
+        detectProgressBar.style.width = `${progressPercent}%`;
+        detectProgressBar.setAttribute('aria-valuenow', String(progressPercent));
+        setDetectStatus(`Analyzing audio… ${progressPercent}%`);
       },
     });
 
@@ -313,6 +388,9 @@ async function runNoteDetection(prepared, myGeneration) {
     const notes = stitchNotes(rawNotes, { maxGapSeconds: settings.stitchGapSeconds });
 
     detectedNotes = notes;
+    rawDetectedNotes = rawNotes;
+    lastDetectionSettings = settings;
+    detectProgressBar.setAttribute('aria-valuenow', '100');
     renderNoteResults(notes, rawNotes.length);
     detectProgressSection.classList.add('hidden');
     result = notes;
@@ -459,6 +537,8 @@ function resetSelection() {
   selectedFile = null;
   decodedAudio = null;
   detectedNotes = null;
+  rawDetectedNotes = null;
+  lastDetectionSettings = null;
   decodeGeneration += 1;
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl);

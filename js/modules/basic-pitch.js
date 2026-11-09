@@ -21,6 +21,8 @@ export const MODEL_FRAME_SECONDS = 256 / 22050;
 
 let modulePromise = null;
 let modelInstance = null;
+let workerInstance = null;
+let workerRunId = 0;
 
 function loadBasicPitchModule() {
   if (!modulePromise) {
@@ -37,35 +39,51 @@ async function getModelInstance() {
   return modelInstance;
 }
 
+function getWorkerInstance() {
+  if (!workerInstance && typeof Worker !== 'undefined') {
+    workerInstance = new Worker(new URL('./basic-pitch-worker.js', import.meta.url), { type: 'module' });
+  }
+  return workerInstance;
+}
+
 /**
  * Pre-fetches the Basic Pitch module + model weights so later calls to
  * detectNotes() don't pay the (one-time) download/compile cost mid-progress.
  */
 export async function preloadModel() {
+  try {
+    const worker = getWorkerInstance();
+    if (worker) {
+      await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('Timed out while preloading Basic Pitch worker model.'));
+        }, 20000);
+        const onMessage = (event) => {
+          const { type, error } = event.data || {};
+          if (type === 'preload-ready') {
+            clearTimeout(timeoutId);
+            worker.removeEventListener('message', onMessage);
+            resolve();
+          } else if (type === 'preload-error') {
+            clearTimeout(timeoutId);
+            worker.removeEventListener('message', onMessage);
+            reject(new Error(error || 'Basic Pitch worker preload failed.'));
+          }
+        };
+        worker.addEventListener('message', onMessage);
+        worker.postMessage({ type: 'preload' });
+      });
+      return;
+    }
+  } catch (error) {
+    console.warn('Basic Pitch worker preload failed; falling back to main-thread preload.', error);
+    workerInstance = null;
+  }
+
   await getModelInstance().then((bp) => bp.model);
 }
 
-/**
- * Runs Basic Pitch polyphonic note detection on mono audio samples.
- * @param {Float32Array} monoSamples Mono audio at 22050 Hz (see
- *   js/modules/audio-decode.js MODEL_SAMPLE_RATE).
- * @param {Object} [options]
- * @param {(percent: number) => void} [options.onProgress] Called with 0..1.
- * @param {number} [options.onsetThreshold=0.25] Lower = more (possibly
- *   spurious) note onsets detected.
- * @param {number} [options.frameThreshold=0.25] Lower = notes held/extended
- *   more readily, reducing missed sustain.
- * @param {number} [options.minNoteLengthFrames=5] Minimum note length in
- *   model frames (~11.6 ms each) before a detected note is discarded.
- * @returns {Promise<Array<{
- *   startTimeSeconds: number,
- *   durationSeconds: number,
- *   pitchMidi: number,
- *   amplitude: number,
- *   pitchBends?: number[],
- * }>>}
- */
-export async function detectNotes(monoSamples, options = {}) {
+async function detectNotesOnMainThread(monoSamples, options) {
   const {
     onProgress = () => {},
     onsetThreshold = 0.25,
@@ -93,4 +111,80 @@ export async function detectNotes(monoSamples, options = {}) {
   const rawNotes = outputToNotesPoly(frames, onsets, onsetThreshold, frameThreshold, minNoteLengthFrames);
   const notesWithBends = addPitchBendsToNoteEvents(contours, rawNotes);
   return noteFramesToTime(notesWithBends);
+}
+
+/**
+ * Runs Basic Pitch polyphonic note detection on mono audio samples.
+ * @param {Float32Array} monoSamples Mono audio at 22050 Hz (see
+ *   js/modules/audio-decode.js MODEL_SAMPLE_RATE).
+ * @param {Object} [options]
+ * @param {(percent: number) => void} [options.onProgress] Called with 0..1.
+ * @param {number} [options.onsetThreshold=0.25] Lower = more (possibly
+ *   spurious) note onsets detected.
+ * @param {number} [options.frameThreshold=0.25] Lower = notes held/extended
+ *   more readily, reducing missed sustain.
+ * @param {number} [options.minNoteLengthFrames=5] Minimum note length in
+ *   model frames (~11.6 ms each) before a detected note is discarded.
+ * @returns {Promise<Array<{
+ *   startTimeSeconds: number,
+ *   durationSeconds: number,
+ *   pitchMidi: number,
+ *   amplitude: number,
+ *   pitchBends?: number[],
+ * }>>}
+ */
+export async function detectNotes(monoSamples, options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  const onsetThreshold = typeof options.onsetThreshold === 'number' ? options.onsetThreshold : 0.25;
+  const frameThreshold = typeof options.frameThreshold === 'number' ? options.frameThreshold : 0.25;
+  const minNoteLengthFrames = typeof options.minNoteLengthFrames === 'number' ? options.minNoteLengthFrames : 5;
+
+  try {
+    const worker = getWorkerInstance();
+    if (worker) {
+      const runId = ++workerRunId;
+      return await new Promise((resolve, reject) => {
+        const onMessage = (event) => {
+          const data = event.data || {};
+          if (data.runId !== runId) return;
+
+          if (data.type === 'progress') {
+            onProgress(data.progress);
+            return;
+          }
+
+          worker.removeEventListener('message', onMessage);
+
+          if (data.type === 'result') {
+            resolve(data.notes || []);
+          } else if (data.type === 'error') {
+            reject(new Error(data.error || 'Basic Pitch worker failed.'));
+          }
+        };
+
+        worker.addEventListener('message', onMessage);
+        worker.postMessage({
+          type: 'run',
+          runId,
+          monoSamples: Array.from(monoSamples),
+          onsetThreshold,
+          frameThreshold,
+          minNoteLengthFrames,
+        });
+      });
+    }
+  } catch (error) {
+    console.warn('Basic Pitch worker inference failed; falling back to main-thread inference.', error);
+    if (workerInstance) {
+      workerInstance.terminate();
+      workerInstance = null;
+    }
+  }
+
+  return detectNotesOnMainThread(monoSamples, {
+    onProgress,
+    onsetThreshold,
+    frameThreshold,
+    minNoteLengthFrames,
+  });
 }
